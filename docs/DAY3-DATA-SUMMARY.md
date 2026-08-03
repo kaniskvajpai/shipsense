@@ -52,3 +52,17 @@ Files produced:
 
 \- docs/eda/\*.png (4 plots)
 
+UPDATE (Day 4/5 session - Model Training): Random Forest won decisively
+
+\- MAE 70.85 min vs Linear Regression's 117.19 min (40% error reduction).
+
+Feature importances show distance\_km is actually the #1 feature (36.6%)
+
+once non-linear interactions are captured -- refining the earlier finding
+
+into "distance matters, but non-linearly, depending on courier/region."
+
+Model saved: models/eta\_model.pkl, metrics.json, feature\_order.json,
+
+feature\_importances.json.
+

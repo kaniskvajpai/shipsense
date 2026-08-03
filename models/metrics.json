@@ -1,0 +1,15 @@
+{
+  "baseline_linear_regression": {
+    "mae_minutes": 117.19,
+    "rmse_minutes": 144.5
+  },
+  "random_forest": {
+    "mae_minutes": 70.85,
+    "rmse_minutes": 98.81
+  },
+  "chosen_model": "random_forest",
+  "chosen_mae_minutes": 70.85,
+  "chosen_rmse_minutes": 98.81,
+  "train_size": 158019,
+  "test_size": 39505
+}

@@ -1,0 +1,12 @@
+{
+  "distance_km": 0.3656,
+  "courier_id": 0.1865,
+  "region_id": 0.1551,
+  "aoi_id": 0.131,
+  "hour_of_day": 0.105,
+  "day_of_week": 0.0202,
+  "aoi_type_1": 0.0102,
+  "aoi_type_14": 0.0094,
+  "aoi_type_4": 0.0038,
+  "aoi_type_7": 0.0027
+}

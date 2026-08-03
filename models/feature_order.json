@@ -1,0 +1,12 @@
+{
+  "feature_order": [
+    "distance_km",
+    "hour_of_day",
+    "day_of_week",
+    "region_id",
+    "courier_id",
+    "aoi_id",
+    "aoi_type",
+    "is_weekend"
+  ]
+}
