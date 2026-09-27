@@ -44,7 +44,7 @@ def apply_filters(df: pd.DataFrame, region, risk, hour_range) -> pd.DataFrame:
 st.title("🚚 ShipSense")
 st.caption("AI-powered delivery risk & ETA intelligence")
 
-tab1, tab2, tab3 = st.tabs(["Operations Dashboard", "Demand Heatmap", "Executive Summary"])
+tab1, tab2, tab3, tab4 = st.tabs(["Operations Dashboard", "Demand Heatmap", "Executive Summary", "Demand Forecast"])
 
 # Shared data load (used by all three tabs)
 data_load_error = None
@@ -245,6 +245,71 @@ with tab3:
             f"promised time. The factor most strongly associated with these delays is **{top_factor_name}**."
         )
 
+# ================= TAB 4: DEMAND FORECAST (post-v1.0 addition) =================
+with tab4:
+    FORECAST_PATH = "data/processed/demand_forecast.csv"
+    if not os.path.exists(FORECAST_PATH):
+        st.error(
+            "Forecast data not found. Run `python src/train_demand_model.py` "
+            "first to generate `data/processed/demand_forecast.csv`."
+        )
+    else:
+        forecast_df = pd.read_csv(FORECAST_PATH)
+
+        st.subheader("Predicted Order Volume")
+        st.caption(
+            "A trained forecasting model (not raw historical counts) predicting "
+            "expected order volume for any region, hour, and day of week."
+        )
+
+        fcol1, fcol2 = st.columns(2)
+        with fcol1:
+            forecast_regions = sorted(forecast_df["region_id"].unique().tolist())
+            selected_forecast_region = st.selectbox(
+                "Region", forecast_regions, key="forecast_region"
+            )
+        with fcol2:
+            day_names = ["Monday", "Tuesday", "Wednesday", "Thursday",
+                         "Friday", "Saturday", "Sunday"]
+            selected_day_name = st.selectbox("Day of Week", day_names, key="forecast_day")
+            selected_day_num = day_names.index(selected_day_name)
+
+        is_weekend_val = selected_day_num in [5, 6]
+
+        subset = forecast_df[
+            (forecast_df["region_id"] == selected_forecast_region)
+            & (forecast_df["day_of_week"] == selected_day_num)
+            & (forecast_df["is_weekend"] == is_weekend_val)
+        ].sort_values("hour_of_day")
+
+        if len(subset) == 0:
+            st.warning("No forecast data for this combination.")
+        else:
+            fig5 = px.bar(
+                subset, x="hour_of_day", y="predicted_orders",
+                labels={"hour_of_day": "Hour of Day", "predicted_orders": "Predicted Orders"},
+                color_discrete_sequence=["#8B5CF6"],
+            )
+            fig5.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10))
+            st.plotly_chart(fig5, use_container_width=True)
+
+            peak_row = subset.loc[subset["predicted_orders"].idxmax()]
+            st.caption(
+                f"Predicted peak: **{int(peak_row['predicted_orders'])} orders** "
+                f"around **{int(peak_row['hour_of_day']):02d}:00** "
+                f"on {selected_day_name} in Region {selected_forecast_region}."
+            )
+
+        with st.expander("Model accuracy"):
+            demand_metrics_path = "models/demand_metrics.json"
+            if os.path.exists(demand_metrics_path):
+                import json
+                with open(demand_metrics_path) as f:
+                    dm = json.load(f)
+                st.write(f"MAE: **{dm['mae_orders']} orders** "
+                         f"(mean actual: {dm['mean_actual_orders']} orders per combination)")
+            else:
+                st.write("Metrics file not found.")
 # ---------- Footer ----------
 st.divider()
 st.markdown(
