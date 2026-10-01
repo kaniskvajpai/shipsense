@@ -1,0 +1,6 @@
+{
+  "mae_min_per_km": 26.283,
+  "mean_actual_min_per_km": 71.029,
+  "train_size": 1117,
+  "test_size": 280
+}

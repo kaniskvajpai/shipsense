@@ -44,7 +44,7 @@ def apply_filters(df: pd.DataFrame, region, risk, hour_range) -> pd.DataFrame:
 st.title("🚚 ShipSense")
 st.caption("AI-powered delivery risk & ETA intelligence")
 
-tab1, tab2, tab3, tab4 = st.tabs(["Operations Dashboard", "Demand Heatmap", "Executive Summary", "Demand Forecast"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Operations Dashboard", "Demand Heatmap", "Executive Summary", "Demand Forecast", "Traffic Prediction"])
 
 # Shared data load (used by all three tabs)
 data_load_error = None
@@ -310,6 +310,76 @@ with tab4:
                          f"(mean actual: {dm['mean_actual_orders']} orders per combination)")
             else:
                 st.write("Metrics file not found.")
+
+# ================= TAB 5: TRAFFIC PREDICTION (post-v1.0 addition) =================
+with tab5:
+    TRAFFIC_PATH = "data/processed/traffic_forecast.csv"
+    if not os.path.exists(TRAFFIC_PATH):
+        st.error(
+            "Traffic forecast data not found. Run `python src/train_traffic_model.py` "
+            "first to generate `data/processed/traffic_forecast.csv`."
+        )
+    else:
+        traffic_df = pd.read_csv(TRAFFIC_PATH)
+
+        st.subheader("Predicted Congestion Level")
+        st.caption(
+            "⚠️ Not live traffic data. This is a proxy derived from historical "
+            "travel time per kilometer — higher values suggest slower-than-average "
+            "conditions for that region and time, based on past deliveries only."
+        )
+
+        tcol1, tcol2 = st.columns(2)
+        with tcol1:
+            traffic_regions = sorted(traffic_df["region_id"].unique().tolist())
+            selected_traffic_region = st.selectbox(
+                "Region", traffic_regions, key="traffic_region"
+            )
+        with tcol2:
+            day_names_t = ["Monday", "Tuesday", "Wednesday", "Thursday",
+                           "Friday", "Saturday", "Sunday"]
+            selected_traffic_day_name = st.selectbox("Day of Week", day_names_t, key="traffic_day")
+            selected_traffic_day_num = day_names_t.index(selected_traffic_day_name)
+
+        is_weekend_traffic = selected_traffic_day_num in [5, 6]
+
+        t_subset = traffic_df[
+            (traffic_df["region_id"] == selected_traffic_region)
+            & (traffic_df["day_of_week"] == selected_traffic_day_num)
+            & (traffic_df["is_weekend"] == is_weekend_traffic)
+        ].sort_values("hour_of_day")
+
+        if len(t_subset) == 0:
+            st.warning("No forecast data for this combination.")
+        else:
+            color_map = {"Low": "#2ECC71", "Moderate": "#F39C12", "High": "#E74C3C"}
+            fig6 = px.bar(
+                t_subset, x="hour_of_day", y="predicted_min_per_km",
+                color="congestion_level",
+                color_discrete_map=color_map,
+                labels={"hour_of_day": "Hour of Day", "predicted_min_per_km": "Minutes per KM",
+                        "congestion_level": "Congestion"},
+            )
+            fig6.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10))
+            st.plotly_chart(fig6, use_container_width=True)
+
+            worst_row = t_subset.loc[t_subset["predicted_min_per_km"].idxmax()]
+            st.caption(
+                f"Worst predicted congestion: **{worst_row['congestion_level']}** "
+                f"around **{int(worst_row['hour_of_day']):02d}:00** "
+                f"on {selected_traffic_day_name} in Region {selected_traffic_region}."
+            )
+
+        with st.expander("Model accuracy"):
+            traffic_metrics_path = "models/traffic_metrics.json"
+            if os.path.exists(traffic_metrics_path):
+                import json
+                with open(traffic_metrics_path) as f:
+                    tm = json.load(f)
+                st.write(f"MAE: **{tm['mae_min_per_km']} min/km** "
+                         f"(mean actual: {tm['mean_actual_min_per_km']} min/km)")
+            else:
+                st.write("Metrics file not found.")                
 # ---------- Footer ----------
 st.divider()
 st.markdown(
