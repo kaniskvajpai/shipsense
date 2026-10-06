@@ -219,3 +219,4 @@ __marimo__/
 models/*.pkl
 output.txt
 check_predictions.py
+venv_routing/
