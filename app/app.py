@@ -44,7 +44,7 @@ def apply_filters(df: pd.DataFrame, region, risk, hour_range) -> pd.DataFrame:
 st.title("🚚 ShipSense")
 st.caption("AI-powered delivery risk & ETA intelligence")
 
-tab1, tab2, tab3, tab4, tab5,tab6 = st.tabs(["Operations Dashboard", "Demand Heatmap", "Executive Summary", "Demand Forecast", "Traffic Prediction", "Vehicle Routing"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Operations Dashboard", "Demand Heatmap", "Executive Summary", "Demand Forecast", "Traffic Prediction", "Vehicle Routing", "Rider Allocation"])
 
 # Shared data load (used by all three tabs)
 data_load_error = None
@@ -393,3 +393,8 @@ st.markdown(
 with tab6:
     from routing_tab import render_routing_tab
     render_routing_tab()
+
+# ================= TAB 7: RIDER ALLOCATION (post-v1.0, module 4) =================
+with tab7:
+    from allocation_tab import render_allocation_tab
+    render_allocation_tab()
