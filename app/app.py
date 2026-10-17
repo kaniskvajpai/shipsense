@@ -44,7 +44,7 @@ def apply_filters(df: pd.DataFrame, region, risk, hour_range) -> pd.DataFrame:
 st.title("🚚 ShipSense")
 st.caption("AI-powered delivery risk & ETA intelligence")
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Operations Dashboard", "Demand Heatmap", "Executive Summary", "Demand Forecast", "Traffic Prediction", "Vehicle Routing", "Rider Allocation"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["Operations Dashboard", "Demand Heatmap", "Executive Summary", "Demand Forecast", "Traffic Prediction", "Vehicle Routing", "Rider Allocation"   , "Dynamic Pricing"])
 
 # Shared data load (used by all three tabs)
 data_load_error = None
@@ -398,3 +398,8 @@ with tab6:
 with tab7:
     from allocation_tab import render_allocation_tab
     render_allocation_tab()
+
+# ================= TAB 8: DYNAMIC PRICING (post-v1.0, module 5) =================
+with tab8:
+    from pricing_tab import render_pricing_tab
+    render_pricing_tab()
