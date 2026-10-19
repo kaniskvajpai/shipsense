@@ -44,7 +44,7 @@ def apply_filters(df: pd.DataFrame, region, risk, hour_range) -> pd.DataFrame:
 st.title("🚚 ShipSense")
 st.caption("AI-powered delivery risk & ETA intelligence")
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["Operations Dashboard", "Demand Heatmap", "Executive Summary", "Demand Forecast", "Traffic Prediction", "Vehicle Routing", "Rider Allocation"   , "Dynamic Pricing"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(["Operations Dashboard", "Demand Heatmap", "Executive Summary", "Demand Forecast", "Traffic Prediction", "Vehicle Routing", "Rider Allocation"   , "Dynamic Pricing"    , "Live ETA"])
 
 # Shared data load (used by all three tabs)
 data_load_error = None
@@ -403,3 +403,8 @@ with tab7:
 with tab8:
     from pricing_tab import render_pricing_tab
     render_pricing_tab()
+
+# ================= TAB 9: LIVE ETA (post-v1.0, module 6) =================
+with tab9:  
+    from live_eta_tab import render_live_eta_tab
+    render_live_eta_tab()

@@ -220,3 +220,4 @@ models/*.pkl
 output.txt
 check_predictions.py
 venv_routing/
+!models/eta_live_model.pkl
