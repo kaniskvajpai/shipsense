@@ -4,8 +4,10 @@ ShipSense - Module 6 (fixed): compact live ETA model.
 Changes vs v1:
   1. Trains on log1p(duration) -> expm1 at predict time. Stops the model
      collapsing every prediction toward the regional mean (~3-4 hours).
-  2. region_id / courier_id / aoi_id / aoi_type / is_weekend are fitted as
-     true categories (no bogus numeric splits like region_id <= 3.5).
+  2. region_id / aoi_type / is_weekend are fitted as true categories.
+     NOTE: aoi_id (6,731 unique) and courier_id exceed sklearn's 255-cardinality
+     limit for native categorical support in HistGradientBoostingRegressor, so
+     they stay numeric (the booster can still split on their values).
   3. Trains p10 / p50 / p90 models so the app shows an ETA window
      instead of one misleading point estimate.
 
@@ -43,7 +45,12 @@ OUT_METRICS = MODELS / "eta_live_metrics.json"
 OUT_DEFAULTS = ROOT / "data" / "processed" / "eta_defaults.json"
 TARGET = "delivery_duration_minutes"
 REQUIRED_SKLEARN = "1.5.2"
-CAT_FEATURES = ["region_id", "courier_id", "aoi_id", "aoi_type", "is_weekend"]
+
+# Only low-cardinality columns can be native categories in
+# HistGradientBoostingRegressor (hard limit: 255 unique values).
+CAT_FEATURES = ["region_id", "aoi_type", "is_weekend"]
+MAX_CARDINALITY = 255
+
 PARAMS = dict(max_iter=300, learning_rate=0.05, max_leaf_nodes=31,
               min_samples_leaf=50)
 TOP_N = 10
@@ -60,10 +67,19 @@ def main():
     X = df[FEATURE_ORDER].copy()
     y = df[TARGET].astype(float)
 
-    # Fix 2: IDs and flags are categories, not numbers.
+    # Fix 2: only genuinely low-cardinality columns become categories.
+    # aoi_id / courier_id stay numeric (they exceed the 255-value limit).
+    cat_features = []
     for c in CAT_FEATURES:
-        X[c] = X[c].astype("category")
-    cat_maps = {c: list(X[c].cat.categories) for c in CAT_FEATURES}
+        n_unique = X[c].nunique()
+        if n_unique <= MAX_CARDINALITY:
+            X[c] = X[c].astype("category")
+            cat_features.append(c)
+        else:
+            print("Note: '%s' has %d unique values (> %d); keeping numeric."
+                  % (c, n_unique, MAX_CARDINALITY))
+    cat_maps = {c: list(X[c].cat.categories) for c in cat_features}
+    print("Categorical features:", cat_features)
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=RANDOM_STATE
@@ -121,10 +137,12 @@ def main():
     risk_live = (pred_p50 - promised.values) > DELAY_RISK_THRESHOLD_MINUTES
 
     metrics = {
-        "model": "HistGradientBoostingRegressor (log1p target, categorical IDs)",
+        "model": "HistGradientBoostingRegressor (log1p target, categorical "
+                 "region_id/aoi_type/is_weekend)",
         "params": PARAMS,
         "sklearn_version": sklearn.__version__,
         "feature_order": list(FEATURE_ORDER),
+        "categorical_features": cat_features,
         "train_rows": int(len(X_train)),
         "test_rows": int(len(X_test)),
         "mae_minutes": round(mae_p50, 2),
