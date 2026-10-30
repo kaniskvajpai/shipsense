@@ -11,6 +11,9 @@ Key changes:
     src/build_travel_stats.py), also shows the DIRECT TRAVEL estimate
     (distance / regional median courier speed + median handover) next to
     the realistic route estimate, and explains why they differ (batching).
+  - Distance input is capped at 2x the region's p90 distance (floor 10 km)
+    instead of an arbitrary 100 km: the model was never trained on 100 km
+    deliveries, so predictions there would be pure extrapolation.
 
 "Live" still means computed on request, not live traffic or rider tracking.
 """
@@ -29,6 +32,12 @@ DEFAULTS_PATH = "data/processed/eta_defaults.json"
 TRAVEL_STATS_PATH = "data/processed/travel_stats.json"
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 WEEKEND_DAYS = (5, 6)
+
+# Distance input bounds: never below the region's p90 distance, never
+# above 2x it (floor 10 km). Keeps predictions inside the training data.
+MIN_INPUT_KM = 0.1
+P90_MULTIPLE = 2.0
+MAX_INPUT_FLOOR_KM = 10.0
 
 
 @st.cache_resource
@@ -112,11 +121,15 @@ def render_live_eta_tab():
         format_func=lambda h: "%02d:00" % h,
         key="live_eta_hour",
     )
-    start_km = min(max(float(info["median_distance_km"]), 0.1), 100.0)
+    # Data-grounded distance bounds: cap at 2x the region's p90 distance
+    # (floor 10 km) so predictions stay inside the training distribution.
+    p90_km = max(float(info["p90_distance_km"]), MIN_INPUT_KM)
+    max_km = round(max(p90_km * P90_MULTIPLE, MAX_INPUT_FLOOR_KM), 1)
+    start_km = min(max(float(info["median_distance_km"]), MIN_INPUT_KM), max_km)
     distance = c4.number_input(
         "Distance (km)",
-        min_value=0.1,
-        max_value=100.0,
+        min_value=MIN_INPUT_KM,
+        max_value=max_km,
         value=start_km,
         step=0.5,
         key="live_eta_distance_%s" % region,
@@ -223,10 +236,10 @@ def render_live_eta_tab():
         "times), the same rule as the other tabs. Treat the numbers as rough "
         "estimates, not promises." % threshold
     )
-    if distance > float(info["p90_distance_km"]):
+    if distance > p90_km:
         st.warning(
             "This distance is longer than 90 percent of past orders in this "
-            "region, so the estimate is less reliable."
+            "region (p90: %.1f km), so the estimate is less reliable." % p90_km
         )
 
     hours = list(range(24))
@@ -298,6 +311,9 @@ def render_live_eta_tab():
             "minimizes average error.\n"
             "- The shown range is the 10th-90th percentile band of similar past "
             "orders; the median (p50) is the headline number.\n"
+            "- The distance input is capped at twice the region's 90th-percentile "
+            "delivery distance (at least 10 km) because the model has no "
+            "training examples beyond that range.\n"
             "- The direct travel estimate comes from empirical courier speeds "
             "measured on consecutive drops in this city's data "
             "(src/build_travel_stats.py). It ignores batching by design.\n"
