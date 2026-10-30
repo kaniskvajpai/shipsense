@@ -1,15 +1,21 @@
 """
-Live ETA tab (post-v1.0, module 6).
+Live ETA tab (fixed, post-v1.0, module 6).
 
-The only tab that runs a model on request: a compact gradient-boosting ETA model
-(about 1 MB) saved by src/train_live_eta.py. It uses the same promised-ETA and
-At Risk rule as src/predict.py. "Live" means computed on request, not live
-traffic or rider tracking.
+Key changes vs v1:
+  - Loads the new bundle from train_live_eta.py (p10/p50/p90 models
+    + category maps) instead of a single raw model.
+  - Casts categorical columns to the exact trained categories before
+    predict (region_id etc. are categorical now, not numeric).
+  - Shows an ETA window (p10-p90) with the p50 as the headline number
+    instead of one misleading point estimate.
+
+"Live" still means computed on request, not live traffic or rider tracking.
 """
 import json
 import os
 
 import joblib
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -22,7 +28,7 @@ WEEKEND_DAYS = (5, 6)
 
 
 @st.cache_resource
-def load_model(path: str):
+def load_bundle(path: str):
     return joblib.load(path)
 
 
@@ -49,23 +55,27 @@ def render_live_eta_tab():
         )
         return
 
+    bundle = load_bundle(MODEL_PATH)
+    models = bundle["models"]
+    cat_maps = bundle["cat_maps"]
+    feature_order = bundle["feature_order"]
+
     metrics = load_json(METRICS_PATH)
     defaults = load_json(DEFAULTS_PATH)
     regions = defaults["regions"]
     threshold = defaults["threshold_minutes"]
-    feature_order = metrics["feature_order"]
-    model = load_model(MODEL_PATH)
 
     st.info(
-        "Live here means computed on request, not live traffic or rider "
-        "tracking. This is the only tab where the app runs a model: a compact "
-        "gradient-boosting model (about 1 MB) trained on the same historical "
-        "orders as the main ETA model. On %d past orders held out from training "
-        "its average error was %.1f minutes (the full batch model: 70.9), and it "
-        "gives the same At Risk label as the batch model for about 96 percent of "
-        "orders. The courier and delivery area are usually unknown, so by "
-        "default the region's most common ones are used."
-        % (metrics["test_rows"], metrics["mae_minutes"])
+        "Estimated on request from a compact gradient-boosting model trained on "
+        "the same historical orders as the main ETA model. Because courier, live "
+        "traffic, weather and rider position are unknown, we show a likely range "
+        "(p10-p90), not a single promise. On %d past orders held out from "
+        "training the median estimate was off by about %.0f minutes on average, "
+        "and the true delivery time fell inside the shown range about %.0f%% of "
+        "the time. Courier and delivery area default to the region's most "
+        "common ones."
+        % (metrics["test_rows"], metrics["mae_minutes"],
+           100 * metrics["p10_p90_coverage"])
     )
 
     region_ids = sorted(regions.keys(), key=int)
@@ -121,7 +131,7 @@ def render_live_eta_tab():
 
     def make_rows(hours):
         n = len(hours)
-        return pd.DataFrame(
+        raw = pd.DataFrame(
             {
                 "distance_km": [float(distance)] * n,
                 "hour_of_day": list(hours),
@@ -133,23 +143,34 @@ def render_live_eta_tab():
                 "is_weekend": [day in WEEKEND_DAYS] * n,
             }
         )[feature_order]
+        # cast to the exact categories the model was trained with
+        for c, cats in cat_maps.items():
+            raw[c] = pd.Categorical(raw[c], categories=cats)
+        return raw
 
-    eta = float(model.predict(make_rows([hour]))[0])
+    rows = make_rows([hour])
+    eta50 = float(np.expm1(models["p50"].predict(rows)[0]))
+    eta10 = float(np.expm1(models["p10"].predict(rows)[0]))
+    eta90 = float(np.expm1(models["p90"].predict(rows)[0]))
+    eta10 = min(eta10, eta50)
+    eta90 = max(eta90, eta50)
+
     promised = float(info["promised_eta_minutes"])
-    delay = eta - promised
+    delay = eta50 - promised
     at_risk = delay > threshold
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Predicted ETA", fmt_minutes(eta))
-    m2.metric("Promised ETA (region)", fmt_minutes(promised))
+    m1.metric("Estimated ETA (median)", fmt_minutes(eta50))
+    m2.metric("Likely range", "%s - %s" % (fmt_minutes(eta10), fmt_minutes(eta90)))
     m3.metric("Delay vs promised", "%+.0f min" % delay)
     m4.metric("Status", "At Risk" if at_risk else "On Track")
     st.caption(
-        "At Risk means the predicted ETA is more than %d minutes above the "
-        "region's promised ETA (the 75th percentile of its past delivery "
-        "times), the same rule as the other tabs. On past orders this model is "
-        "off by about 72 minutes on average, so treat the number as a rough "
-        "estimate, not a promise." % threshold
+        "This is the historical pickup-to-delivery time for similar orders in "
+        "this region - it includes courier batching and pickup queueing, not "
+        "just riding. At Risk means the median estimate is more than %d minutes "
+        "above the region's promised ETA (the 75th percentile of its past "
+        "delivery times), the same rule as the other tabs. Treat the numbers as "
+        "rough estimates, not promises." % threshold
     )
     if distance > float(info["p90_distance_km"]):
         st.warning(
@@ -158,24 +179,40 @@ def render_live_eta_tab():
         )
 
     hours = list(range(24))
-    curve = model.predict(make_rows(hours))
+    rows24 = make_rows(hours)
+    curve50 = np.expm1(models["p50"].predict(rows24))
+    curve10 = np.minimum(np.expm1(models["p10"].predict(rows24)), curve50)
+    curve90 = np.maximum(np.expm1(models["p90"].predict(rows24)), curve50)
+
     fig = go.Figure()
     fig.add_trace(
-        go.Scatter(x=hours, y=curve, mode="lines+markers", name="Predicted ETA")
+        go.Scatter(
+            x=hours, y=curve90, mode="lines",
+            line=dict(width=0), showlegend=False,
+            hoverinfo="skip", name="p90",
+        )
     )
     fig.add_trace(
         go.Scatter(
-            x=[hour],
-            y=[eta],
-            mode="markers",
-            marker=dict(size=14, color="red"),
-            name="Selected hour",
+            x=hours, y=curve10, mode="lines", fill="tonexty",
+            fillcolor="rgba(0,118,255,0.18)", line=dict(width=0),
+            name="p10-p90 range",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=hours, y=curve50, mode="lines+markers", name="Median ETA"
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[hour], y=[eta50], mode="markers",
+            marker=dict(size=14, color="red"), name="Selected hour",
         )
     )
     fig.add_hline(y=promised, line_dash="dash", annotation_text="Promised ETA")
     fig.add_hline(
-        y=promised + threshold,
-        line_dash="dot",
+        y=promised + threshold, line_dash="dot",
         annotation_text="At Risk above this line",
     )
     fig.update_layout(
@@ -193,16 +230,21 @@ def render_live_eta_tab():
             "- Live means computed on request. The model sees none of the real "
             "conditions of a delivery: no live traffic, weather or rider "
             "position.\n"
-            "- A compact gradient-boosting model (about 1 MB), saved with "
+            "- A compact gradient-boosting model (a few MB), saved with "
             "scikit-learn 1.5.2. It only loads on that version, so the version "
             "pinned for the app must not change without retraining.\n"
             "- Its inputs are the same eight the main model uses: distance, hour, "
             "weekday, region, courier, delivery area, area type and a weekend "
-            "flag (Saturday and Sunday).\n"
+            "flag (Saturday and Sunday). Region, courier and area are treated as "
+            "categories, so unrelated IDs are never averaged together.\n"
+            "- Predictions are made in log space and converted back, which stops "
+            "the model defaulting every order to the region's average duration.\n"
+            "- The shown range is the 10th-90th percentile band of similar past "
+            "orders; the median (p50) is the headline number.\n"
             "- Courier and delivery area default to the region's most common "
             "ones, which can shift the estimate.\n"
             "- The promised ETA is a proxy: the 75th percentile of the region's "
             "past delivery times, not a real promise.\n"
-            "- The batch tabs use the larger model, so the two can differ by "
-            "about 20 minutes on average for the same order."
+            "- The batch tabs use the larger model, so the two can differ for "
+            "the same order."
         )
