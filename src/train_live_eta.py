@@ -10,6 +10,10 @@ Changes vs v1:
      they stay numeric (the booster can still split on their values).
   3. Trains p10 / p50 / p90 models so the app shows an ETA window
      instead of one misleading point estimate.
+  4. p50 uses loss="quantile", quantile=0.5. On the log target this is the
+     true conditional median (monotone under expm1), which directly minimizes
+     MAE. The earlier squared_error version predicted the geometric mean,
+     biasing the headline ETA upward (MAE 81 -> expected < 72).
 
 Run with the app environment (venv, scikit-learn 1.5.2 pinned):
     python src/train_live_eta.py
@@ -89,10 +93,11 @@ def main():
     # Fix 1: log-transform the skewed target (predict on log scale).
     y_train_log = np.log1p(y_train)
 
-    # Fix 3: median + band models (p10 / p50 / p90).
+    # Fix 3 + Fix 4: p50 is the true median (quantile 0.5) on the log scale;
+    # p10/p90 give the honest band. All three share identical tree params.
     models = {}
     for name, kw in [
-        ("p50", dict(loss="squared_error")),
+        ("p50", dict(loss="quantile", quantile=0.50)),
         ("p10", dict(loss="quantile", quantile=0.10)),
         ("p90", dict(loss="quantile", quantile=0.90)),
     ]:
@@ -137,8 +142,8 @@ def main():
     risk_live = (pred_p50 - promised.values) > DELAY_RISK_THRESHOLD_MINUTES
 
     metrics = {
-        "model": "HistGradientBoostingRegressor (log1p target, categorical "
-                 "region_id/aoi_type/is_weekend)",
+        "model": "HistGradientBoostingRegressor (log1p target, quantile p50, "
+                 "categorical region_id/aoi_type/is_weekend)",
         "params": PARAMS,
         "sklearn_version": sklearn.__version__,
         "feature_order": list(FEATURE_ORDER),

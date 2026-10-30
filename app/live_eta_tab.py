@@ -1,13 +1,23 @@
 """
-Live ETA tab (fixed, post-v1.0, module 6).
+Live ETA tab (module 6 + module 7 direct-travel estimate).
 
-Key changes vs v1:
+Key changes:
   - Loads the new bundle from train_live_eta.py (p10/p50/p90 models
     + category maps) instead of a single raw model.
   - Casts categorical columns to the exact trained categories before
     predict (region_id etc. are categorical now, not numeric).
-  - Shows an ETA window (p10-p90) with the p50 as the headline number
-    instead of one misleading point estimate.
+  - Shows an ETA window (p10-p90) with the p50 as the headline number.
+  - Module 7: if data/processed/travel_stats.json exists (from
+    src/build_travel_stats.py), also shows the DIRECT TRAVEL estimate
+    (distance / regional median courier speed + median handover) next to
+    the realistic route estimate, and explains why they differ (batching).
+  - Distance input goes up to 100 km for any region. Past the region's
+    p90 distance the tab shows a soft reliability warning; past 2x p90
+    (the end of the training distribution) it shows a stronger warning
+    that the route model saturates (gradient boosting cannot extrapolate)
+    while the direct travel estimate keeps scaling linearly.
+  - Stale session-state values from older sliders are clamped to the
+    current bounds so returning visitors see no Streamlit warning.
 
 "Live" still means computed on request, not live traffic or rider tracking.
 """
@@ -23,8 +33,17 @@ import streamlit as st
 MODEL_PATH = "models/eta_live_model.pkl"
 METRICS_PATH = "models/eta_live_metrics.json"
 DEFAULTS_PATH = "data/processed/eta_defaults.json"
+TRAVEL_STATS_PATH = "data/processed/travel_stats.json"
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 WEEKEND_DAYS = (5, 6)
+
+MIN_INPUT_KM = 0.1
+MAX_INPUT_KM = 100.0
+# The training distribution ends around here: beyond 2x a region's p90
+# distance the model is extrapolating (and saturates, since gradient
+# boosting cannot extrapolate) - the UI warns instead of blocking.
+P90_MULTIPLE = 2.0
+MAX_INPUT_FLOOR_KM = 10.0
 
 
 @st.cache_resource
@@ -40,11 +59,13 @@ def load_json(path: str):
 
 def fmt_minutes(minutes):
     h, m = divmod(int(round(minutes)), 60)
+    if h == 0:
+        return "%d min" % m
     return "%d h %02d min" % (h, m)
 
 
 def render_live_eta_tab():
-    st.subheader("Live ETA (compact model)")
+    st.subheader("Live ETA")
 
     needed = [MODEL_PATH, METRICS_PATH, DEFAULTS_PATH]
     if not all(os.path.exists(p) for p in needed):
@@ -64,6 +85,13 @@ def render_live_eta_tab():
     defaults = load_json(DEFAULTS_PATH)
     regions = defaults["regions"]
     threshold = defaults["threshold_minutes"]
+
+    travel = None
+    if os.path.exists(TRAVEL_STATS_PATH):
+        try:
+            travel = load_json(TRAVEL_STATS_PATH)
+        except (json.JSONDecodeError, OSError):
+            travel = None
 
     st.info(
         "Estimated on request from a compact gradient-boosting model trained on "
@@ -99,14 +127,32 @@ def render_live_eta_tab():
         format_func=lambda h: "%02d:00" % h,
         key="live_eta_hour",
     )
-    start_km = min(max(float(info["median_distance_km"]), 0.1), 100.0)
+    # Distance bounds: any value up to 100 km is accepted. The p90-based
+    # thresholds only drive the reliability warnings below.
+    p90_km = max(float(info["p90_distance_km"]), MIN_INPUT_KM)
+    ext_km = round(max(p90_km * P90_MULTIPLE, MAX_INPUT_FLOOR_KM), 1)
+    start_km = min(max(float(info["median_distance_km"]), MIN_INPUT_KM), MAX_INPUT_KM)
+
+    dist_key = "live_eta_distance_%s" % region
+    # Clamp values left in session state by an older slider (e.g. a value
+    # that is no longer a number or is outside the current bounds) so
+    # Streamlit never shows a "value must be..." warning on a rerun.
+    if dist_key in st.session_state:
+        prev = st.session_state[dist_key]
+        try:
+            prev = float(prev)
+        except (TypeError, ValueError):
+            prev = None
+        if prev is None or prev < MIN_INPUT_KM or prev > MAX_INPUT_KM:
+            st.session_state[dist_key] = start_km
+
     distance = c4.number_input(
         "Distance (km)",
-        min_value=0.1,
-        max_value=100.0,
+        min_value=MIN_INPUT_KM,
+        max_value=MAX_INPUT_KM,
         value=start_km,
         step=0.5,
-        key="live_eta_distance_%s" % region,
+        key=dist_key,
     )
 
     with st.expander("Advanced: courier and delivery area"):
@@ -159,23 +205,72 @@ def render_live_eta_tab():
     delay = eta50 - promised
     at_risk = delay > threshold
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Estimated ETA (median)", fmt_minutes(eta50))
-    m2.metric("Likely range", "%s - %s" % (fmt_minutes(eta10), fmt_minutes(eta90)))
-    m3.metric("Delay vs promised", "%+.0f min" % delay)
-    m4.metric("Status", "At Risk" if at_risk else "On Track")
+    # ---- Module 7: direct travel estimate (optional) ----
+    direct_min = None
+    speed_kmph = None
+    if travel is not None:
+        t_region = travel.get("regions", {}).get(str(region))
+        t_global = travel.get("global", {})
+        if t_region:
+            speed_kmph = t_region.get("median_speed_kmph")
+            handover = t_region.get("median_handover_min", 0.0)
+        else:
+            speed_kmph = t_global.get("median_speed_kmph")
+            handover = t_global.get("median_handover_min", 0.0)
+        if speed_kmph:
+            direct_min = distance / speed_kmph * 60.0 + float(handover)
+
+    if direct_min is not None:
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Direct travel estimate", fmt_minutes(direct_min))
+        m2.metric("Realistic route ETA (median)", fmt_minutes(eta50))
+        m3.metric(
+            "Realistic range (p10-p90)",
+            "%s - %s" % (fmt_minutes(eta10), fmt_minutes(eta90)),
+        )
+        m4.metric("Status", "At Risk" if at_risk else "On Track")
+        st.caption(
+            "Direct travel = distance divided by the median riding speed of "
+            "couriers in this region, plus the typical handover stop - what "
+            "the trip would take if your package went straight out. Realistic "
+            "route ETA = what actually happened to similar orders: couriers "
+            "carry a batch of packages and deliver them one by one, so yours "
+            "waits while others on the route are dropped first. The gap "
+            "between the two is the batching/queueing delay, which is real "
+            "and dominates delivery time in this data."
+        )
+    else:
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Estimated ETA (median)", fmt_minutes(eta50))
+        m2.metric("Likely range", "%s - %s" % (fmt_minutes(eta10), fmt_minutes(eta90)))
+        m3.metric("Delay vs promised", "%+.0f min" % delay)
+        m4.metric("Status", "At Risk" if at_risk else "On Track")
+        st.caption(
+            "Direct travel stats not found - run `python src/build_travel_stats.py` "
+            "to also show the direct travel estimate alongside the route ETA."
+        )
+
     st.caption(
-        "This is the historical pickup-to-delivery time for similar orders in "
-        "this region - it includes courier batching and pickup queueing, not "
-        "just riding. At Risk means the median estimate is more than %d minutes "
-        "above the region's promised ETA (the 75th percentile of its past "
-        "delivery times), the same rule as the other tabs. Treat the numbers as "
-        "rough estimates, not promises." % threshold
+        "At Risk means the median route estimate is more than %d minutes above "
+        "the region's promised ETA (the 75th percentile of its past delivery "
+        "times), the same rule as the other tabs. Treat the numbers as rough "
+        "estimates, not promises." % threshold
     )
-    if distance > float(info["p90_distance_km"]):
+
+    # ---- tiered distance reliability warnings (no hard cap) ----
+    if distance > ext_km:
+        st.warning(
+            "%.1f km is far beyond this region's history (p90: %.1f km). The "
+            "route model has no training examples up here, so its estimate "
+            "saturates and will likely understate the trip. The direct travel "
+            "estimate keeps scaling with distance and is the more meaningful "
+            "number in this range."
+            % (distance, p90_km)
+        )
+    elif distance > p90_km:
         st.warning(
             "This distance is longer than 90 percent of past orders in this "
-            "region, so the estimate is less reliable."
+            "region (p90: %.1f km), so the estimate is less reliable." % p90_km
         )
 
     hours = list(range(24))
@@ -204,6 +299,11 @@ def render_live_eta_tab():
             x=hours, y=curve50, mode="lines+markers", name="Median ETA"
         )
     )
+    if direct_min is not None:
+        fig.add_hline(
+            y=direct_min, line_dash="solid", line_color="green",
+            annotation_text="Direct travel estimate",
+        )
     fig.add_trace(
         go.Scatter(
             x=[hour], y=[eta50], mode="markers",
@@ -216,7 +316,7 @@ def render_live_eta_tab():
         annotation_text="At Risk above this line",
     )
     fig.update_layout(
-        title="Predicted ETA by hour (same region, weekday, distance, courier and area)",
+        title="Route ETA by hour (same region, weekday, distance, courier and area)",
         xaxis_title="Hour of day",
         yaxis_title="ETA (minutes)",
         height=380,
@@ -235,16 +335,26 @@ def render_live_eta_tab():
             "pinned for the app must not change without retraining.\n"
             "- Its inputs are the same eight the main model uses: distance, hour, "
             "weekday, region, courier, delivery area, area type and a weekend "
-            "flag (Saturday and Sunday). Region, courier and area are treated as "
+            "flag (Saturday and Sunday). Region and area type are treated as "
             "categories, so unrelated IDs are never averaged together.\n"
-            "- Predictions are made in log space and converted back, which stops "
-            "the model defaulting every order to the region's average duration.\n"
+            "- Predictions are made in log space and converted back, and the "
+            "p50 model is a true median (quantile loss), which directly "
+            "minimizes average error.\n"
             "- The shown range is the 10th-90th percentile band of similar past "
             "orders; the median (p50) is the headline number.\n"
+            "- Any distance from 0.1 to 100 km is accepted, but the model was "
+            "trained on this region's real delivery distances (90 percent were "
+            "under %.1f km). Far beyond that the route estimate saturates - "
+            "gradient boosting cannot extrapolate - while the direct travel "
+            "estimate keeps scaling linearly, so trust the direct estimate up "
+            "there. The tab warns when you are past these thresholds.\n"
+            "- The direct travel estimate comes from empirical courier speeds "
+            "measured on consecutive drops in this city's data "
+            "(src/build_travel_stats.py). It ignores batching by design.\n"
             "- Courier and delivery area default to the region's most common "
             "ones, which can shift the estimate.\n"
             "- The promised ETA is a proxy: the 75th percentile of the region's "
             "past delivery times, not a real promise.\n"
             "- The batch tabs use the larger model, so the two can differ for "
-            "the same order."
+            "the same order." % p90_km
         )
