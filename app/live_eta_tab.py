@@ -11,12 +11,13 @@ Key changes:
     src/build_travel_stats.py), also shows the DIRECT TRAVEL estimate
     (distance / regional median courier speed + median handover) next to
     the realistic route estimate, and explains why they differ (batching).
-  - Distance input is capped at 2x the region's p90 distance (floor 10 km)
-    instead of an arbitrary 100 km: the model was never trained on 100 km
-    deliveries, so predictions there would be pure extrapolation.
-  - Stale session-state values from the old 100 km slider are clamped to
-    the new per-region max, so returning visitors see no Streamlit
-    "value must be less than X" warning.
+  - Distance input goes up to 100 km for any region. Past the region's
+    p90 distance the tab shows a soft reliability warning; past 2x p90
+    (the end of the training distribution) it shows a stronger warning
+    that the route model saturates (gradient boosting cannot extrapolate)
+    while the direct travel estimate keeps scaling linearly.
+  - Stale session-state values from older sliders are clamped to the
+    current bounds so returning visitors see no Streamlit warning.
 
 "Live" still means computed on request, not live traffic or rider tracking.
 """
@@ -36,9 +37,11 @@ TRAVEL_STATS_PATH = "data/processed/travel_stats.json"
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 WEEKEND_DAYS = (5, 6)
 
-# Distance input bounds: never below the region's p90 distance, never
-# above 2x it (floor 10 km). Keeps predictions inside the training data.
 MIN_INPUT_KM = 0.1
+MAX_INPUT_KM = 100.0
+# The training distribution ends around here: beyond 2x a region's p90
+# distance the model is extrapolating (and saturates, since gradient
+# boosting cannot extrapolate) - the UI warns instead of blocking.
 P90_MULTIPLE = 2.0
 MAX_INPUT_FLOOR_KM = 10.0
 
@@ -124,29 +127,29 @@ def render_live_eta_tab():
         format_func=lambda h: "%02d:00" % h,
         key="live_eta_hour",
     )
-    # Data-grounded distance bounds: cap at 2x the region's p90 distance
-    # (floor 10 km) so predictions stay inside the training distribution.
+    # Distance bounds: any value up to 100 km is accepted. The p90-based
+    # thresholds only drive the reliability warnings below.
     p90_km = max(float(info["p90_distance_km"]), MIN_INPUT_KM)
-    max_km = round(max(p90_km * P90_MULTIPLE, MAX_INPUT_FLOOR_KM), 1)
-    start_km = min(max(float(info["median_distance_km"]), MIN_INPUT_KM), max_km)
+    ext_km = round(max(p90_km * P90_MULTIPLE, MAX_INPUT_FLOOR_KM), 1)
+    start_km = min(max(float(info["median_distance_km"]), MIN_INPUT_KM), MAX_INPUT_KM)
 
     dist_key = "live_eta_distance_%s" % region
-    # Clamp values left in session state by the old 100 km slider (or by a
-    # previous region's max) so Streamlit never shows the
-    # "value must be less than X" warning on a returning session.
+    # Clamp values left in session state by an older slider (e.g. a value
+    # that is no longer a number or is outside the current bounds) so
+    # Streamlit never shows a "value must be..." warning on a rerun.
     if dist_key in st.session_state:
         prev = st.session_state[dist_key]
         try:
             prev = float(prev)
         except (TypeError, ValueError):
             prev = None
-        if prev is None or prev < MIN_INPUT_KM or prev > max_km:
+        if prev is None or prev < MIN_INPUT_KM or prev > MAX_INPUT_KM:
             st.session_state[dist_key] = start_km
 
     distance = c4.number_input(
         "Distance (km)",
         min_value=MIN_INPUT_KM,
-        max_value=max_km,
+        max_value=MAX_INPUT_KM,
         value=start_km,
         step=0.5,
         key=dist_key,
@@ -253,7 +256,18 @@ def render_live_eta_tab():
         "times), the same rule as the other tabs. Treat the numbers as rough "
         "estimates, not promises." % threshold
     )
-    if distance > p90_km:
+
+    # ---- tiered distance reliability warnings (no hard cap) ----
+    if distance > ext_km:
+        st.warning(
+            "%.1f km is far beyond this region's history (p90: %.1f km). The "
+            "route model has no training examples up here, so its estimate "
+            "saturates and will likely understate the trip. The direct travel "
+            "estimate keeps scaling with distance and is the more meaningful "
+            "number in this range."
+            % (distance, p90_km)
+        )
+    elif distance > p90_km:
         st.warning(
             "This distance is longer than 90 percent of past orders in this "
             "region (p90: %.1f km), so the estimate is less reliable." % p90_km
@@ -328,9 +342,12 @@ def render_live_eta_tab():
             "minimizes average error.\n"
             "- The shown range is the 10th-90th percentile band of similar past "
             "orders; the median (p50) is the headline number.\n"
-            "- The distance input is capped at twice the region's 90th-percentile "
-            "delivery distance (at least 10 km) because the model has no "
-            "training examples beyond that range.\n"
+            "- Any distance from 0.1 to 100 km is accepted, but the model was "
+            "trained on this region's real delivery distances (90 percent were "
+            "under %.1f km). Far beyond that the route estimate saturates - "
+            "gradient boosting cannot extrapolate - while the direct travel "
+            "estimate keeps scaling linearly, so trust the direct estimate up "
+            "there. The tab warns when you are past these thresholds.\n"
             "- The direct travel estimate comes from empirical courier speeds "
             "measured on consecutive drops in this city's data "
             "(src/build_travel_stats.py). It ignores batching by design.\n"
@@ -339,5 +356,5 @@ def render_live_eta_tab():
             "- The promised ETA is a proxy: the 75th percentile of the region's "
             "past delivery times, not a real promise.\n"
             "- The batch tabs use the larger model, so the two can differ for "
-            "the same order."
+            "the same order." % p90_km
         )
