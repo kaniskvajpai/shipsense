@@ -1,0 +1,126 @@
+{
+  "method": "consecutive-drop legs from raw LaDe-D courier routes; median speed + median handover per region",
+  "guards": {
+    "leg_minutes": [
+      1.0,
+      120.0
+    ],
+    "leg_km": [
+      0.05,
+      30.0
+    ],
+    "speed_kmph": [
+      5.0,
+      60.0
+    ]
+  },
+  "global": {
+    "median_speed_kmph": 7.66,
+    "median_handover_min": 0.0,
+    "direct_eta_min_per_km": 7.83
+  },
+  "regions": {
+    "86": {
+      "median_speed_kmph": 8.26,
+      "median_handover_min": 0.0,
+      "legs_sample": 5443,
+      "direct_eta_min_per_km": 7.26
+    },
+    "95": {
+      "median_speed_kmph": 12.91,
+      "median_handover_min": 0.0,
+      "legs_sample": 964,
+      "direct_eta_min_per_km": 4.65
+    },
+    "102": {
+      "median_speed_kmph": 7.01,
+      "median_handover_min": 0.0,
+      "legs_sample": 1571,
+      "direct_eta_min_per_km": 8.56
+    },
+    "111": {
+      "median_speed_kmph": 7.4,
+      "median_handover_min": 0.0,
+      "legs_sample": 3334,
+      "direct_eta_min_per_km": 8.11
+    },
+    "115": {
+      "median_speed_kmph": 7.08,
+      "median_handover_min": 0.0,
+      "legs_sample": 1008,
+      "direct_eta_min_per_km": 8.47
+    },
+    "118": {
+      "median_speed_kmph": 6.83,
+      "median_handover_min": 0.0,
+      "legs_sample": 398,
+      "direct_eta_min_per_km": 8.78
+    },
+    "128": {
+      "median_speed_kmph": 6.18,
+      "median_handover_min": 0.0,
+      "legs_sample": 552,
+      "direct_eta_min_per_km": 9.71
+    },
+    "137": {
+      "median_speed_kmph": 8.5,
+      "median_handover_min": 0.0,
+      "legs_sample": 2143,
+      "direct_eta_min_per_km": 7.06
+    },
+    "140": {
+      "median_speed_kmph": 8.65,
+      "median_handover_min": 0.0,
+      "legs_sample": 1734,
+      "direct_eta_min_per_km": 6.94
+    },
+    "143": {
+      "median_speed_kmph": 6.29,
+      "median_handover_min": 0.0,
+      "legs_sample": 181,
+      "direct_eta_min_per_km": 9.54
+    },
+    "146": {
+      "median_speed_kmph": 12.17,
+      "median_handover_min": 0.0,
+      "legs_sample": 153,
+      "direct_eta_min_per_km": 4.93
+    },
+    "151": {
+      "median_speed_kmph": 7.31,
+      "median_handover_min": 0.0,
+      "legs_sample": 1425,
+      "direct_eta_min_per_km": 8.21
+    },
+    "156": {
+      "median_speed_kmph": 7.43,
+      "median_handover_min": 0.0,
+      "legs_sample": 1980,
+      "direct_eta_min_per_km": 8.08
+    },
+    "161": {
+      "median_speed_kmph": 6.05,
+      "median_handover_min": 0.0,
+      "legs_sample": 235,
+      "direct_eta_min_per_km": 9.91
+    },
+    "162": {
+      "median_speed_kmph": 6.98,
+      "median_handover_min": 0.0,
+      "legs_sample": 432,
+      "direct_eta_min_per_km": 8.59
+    },
+    "164": {
+      "median_speed_kmph": 7.54,
+      "median_handover_min": 0.0,
+      "legs_sample": 1267,
+      "direct_eta_min_per_km": 7.95
+    },
+    "167": {
+      "median_speed_kmph": 7.0,
+      "median_handover_min": 0.0,
+      "legs_sample": 1445,
+      "direct_eta_min_per_km": 8.58
+    }
+  }
+}

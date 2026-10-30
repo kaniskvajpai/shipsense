@@ -1,5 +1,5 @@
 {
-  "model": "HistGradientBoostingRegressor (log1p target, categorical region_id/aoi_type/is_weekend)",
+  "model": "HistGradientBoostingRegressor (log1p target, quantile p50, categorical region_id/aoi_type/is_weekend)",
   "params": {
     "max_iter": 300,
     "learning_rate": 0.05,
@@ -24,8 +24,8 @@
   ],
   "train_rows": 158019,
   "test_rows": 39505,
-  "mae_minutes": 81.39,
+  "mae_minutes": 78.27,
   "p10_p90_coverage": 0.7973,
-  "at_risk_share_test": 0.0527,
+  "at_risk_share_test": 0.0907,
   "file_mb": 1.44
 }
