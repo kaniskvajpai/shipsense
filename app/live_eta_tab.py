@@ -14,6 +14,9 @@ Key changes:
   - Distance input is capped at 2x the region's p90 distance (floor 10 km)
     instead of an arbitrary 100 km: the model was never trained on 100 km
     deliveries, so predictions there would be pure extrapolation.
+  - Stale session-state values from the old 100 km slider are clamped to
+    the new per-region max, so returning visitors see no Streamlit
+    "value must be less than X" warning.
 
 "Live" still means computed on request, not live traffic or rider tracking.
 """
@@ -126,13 +129,27 @@ def render_live_eta_tab():
     p90_km = max(float(info["p90_distance_km"]), MIN_INPUT_KM)
     max_km = round(max(p90_km * P90_MULTIPLE, MAX_INPUT_FLOOR_KM), 1)
     start_km = min(max(float(info["median_distance_km"]), MIN_INPUT_KM), max_km)
+
+    dist_key = "live_eta_distance_%s" % region
+    # Clamp values left in session state by the old 100 km slider (or by a
+    # previous region's max) so Streamlit never shows the
+    # "value must be less than X" warning on a returning session.
+    if dist_key in st.session_state:
+        prev = st.session_state[dist_key]
+        try:
+            prev = float(prev)
+        except (TypeError, ValueError):
+            prev = None
+        if prev is None or prev < MIN_INPUT_KM or prev > max_km:
+            st.session_state[dist_key] = start_km
+
     distance = c4.number_input(
         "Distance (km)",
         min_value=MIN_INPUT_KM,
         max_value=max_km,
         value=start_km,
         step=0.5,
-        key="live_eta_distance_%s" % region,
+        key=dist_key,
     )
 
     with st.expander("Advanced: courier and delivery area"):
