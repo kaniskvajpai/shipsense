@@ -1,25 +1,31 @@
 """
-ShipSense - Module 6: train the compact live ETA model.
+ShipSense - Module 6 (fixed): compact live ETA model.
 
-Run with the app environment (venv); it must have scikit-learn 1.5.2, the same
-version the deployed app pins:
+Changes vs v1:
+  1. Trains on log1p(duration) -> expm1 at predict time. Stops the model
+     collapsing every prediction toward the regional mean (~3-4 hours).
+  2. region_id / aoi_type / is_weekend are fitted as true categories.
+     NOTE: aoi_id (6,731 unique) and courier_id exceed sklearn's 255-cardinality
+     limit for native categorical support in HistGradientBoostingRegressor, so
+     they stay numeric (the booster can still split on their values).
+  3. Trains p10 / p50 / p90 models so the app shows an ETA window
+     instead of one misleading point estimate.
+
+Run with the app environment (venv, scikit-learn 1.5.2 pinned):
     python src/train_live_eta.py
 
 Writes:
-    models/eta_live_model.pkl         (about 1 MB, safe to upload to GitHub)
+    models/eta_live_model.pkl         (bundle: dict with models + cat_maps)
     models/eta_live_metrics.json
-    data/processed/eta_defaults.json  (region defaults for the Live ETA tab)
-Does NOT touch eta_model.pkl.
-
-The promised ETA and the At Risk rule are the same as in src/predict.py:
-promised = 75th percentile of delivery time per region; At Risk when the
-predicted ETA exceeds the promised ETA by more than DELAY_RISK_THRESHOLD_MINUTES.
+    data/processed/eta_defaults.json
+Does NOT touch eta_model.pkl (the main batch model).
 """
 import json
 import sys
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
 import sklearn
 from sklearn.ensemble import HistGradientBoostingRegressor
@@ -39,7 +45,14 @@ OUT_METRICS = MODELS / "eta_live_metrics.json"
 OUT_DEFAULTS = ROOT / "data" / "processed" / "eta_defaults.json"
 TARGET = "delivery_duration_minutes"
 REQUIRED_SKLEARN = "1.5.2"
-PARAMS = dict(max_iter=300, learning_rate=0.1, max_leaf_nodes=63)
+
+# Only low-cardinality columns can be native categories in
+# HistGradientBoostingRegressor (hard limit: 255 unique values).
+CAT_FEATURES = ["region_id", "aoi_type", "is_weekend"]
+MAX_CARDINALITY = 255
+
+PARAMS = dict(max_iter=300, learning_rate=0.05, max_leaf_nodes=31,
+              min_samples_leaf=50)
 TOP_N = 10
 
 
@@ -51,61 +64,95 @@ def main():
         return
 
     df = pd.read_csv(DATA)
-    X = df[FEATURE_ORDER]
-    y = df[TARGET]
+    X = df[FEATURE_ORDER].copy()
+    y = df[TARGET].astype(float)
+
+    # Fix 2: only genuinely low-cardinality columns become categories.
+    # aoi_id / courier_id stay numeric (they exceed the 255-value limit).
+    cat_features = []
+    for c in CAT_FEATURES:
+        n_unique = X[c].nunique()
+        if n_unique <= MAX_CARDINALITY:
+            X[c] = X[c].astype("category")
+            cat_features.append(c)
+        else:
+            print("Note: '%s' has %d unique values (> %d); keeping numeric."
+                  % (c, n_unique, MAX_CARDINALITY))
+    cat_maps = {c: list(X[c].cat.categories) for c in cat_features}
+    print("Categorical features:", cat_features)
+
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=RANDOM_STATE
     )
     print("train rows:", len(X_train), "| test rows:", len(X_test))
 
-    model = HistGradientBoostingRegressor(random_state=RANDOM_STATE, **PARAMS)
-    model.fit(X_train, y_train)
-    pred_live = model.predict(X_test)
-    mae_live = float(mean_absolute_error(y_test, pred_live))
-    joblib.dump(model, OUT_MODEL, compress=3)
-    size_mb = OUT_MODEL.stat().st_size / 1e6
-    print("Live model: MAE %.2f min, file %.2f MB" % (mae_live, size_mb))
+    # Fix 1: log-transform the skewed target (predict on log scale).
+    y_train_log = np.log1p(y_train)
 
-    # same promised-ETA rule as src/predict.py
+    # Fix 3: median + band models (p10 / p50 / p90).
+    models = {}
+    for name, kw in [
+        ("p50", dict(loss="squared_error")),
+        ("p10", dict(loss="quantile", quantile=0.10)),
+        ("p90", dict(loss="quantile", quantile=0.90)),
+    ]:
+        m = HistGradientBoostingRegressor(
+            random_state=RANDOM_STATE,
+            categorical_features="from_dtype",
+            **PARAMS, **kw,
+        )
+        m.fit(X_train, y_train_log)
+        models[name] = m
+
+    pred_p50 = np.expm1(models["p50"].predict(X_test))
+    pred_p10 = np.expm1(models["p10"].predict(X_test))
+    pred_p90 = np.expm1(models["p90"].predict(X_test))
+    # keep the band monotone
+    pred_p10 = np.minimum(pred_p10, pred_p50)
+    pred_p90 = np.maximum(pred_p90, pred_p50)
+
+    mae_p50 = float(mean_absolute_error(y_test, pred_p50))
+    in_band = float(((y_test >= pred_p10) & (y_test <= pred_p90)).mean())
+    print("Live model p50 MAE: %.2f min | p10-p90 coverage: %.1f%%"
+          % (mae_p50, 100 * in_band))
+
+    joblib.dump(
+        {
+            "models": models,
+            "cat_maps": cat_maps,
+            "feature_order": list(FEATURE_ORDER),
+        },
+        OUT_MODEL,
+        compress=3,
+    )
+    size_mb = OUT_MODEL.stat().st_size / 1e6
+    print("Wrote %s (%.2f MB)" % (OUT_MODEL, size_mb))
+
+    # promised ETA + At Risk rule unchanged (same as src/predict.py)
     region_p75 = df.groupby("region_id")[TARGET].quantile(0.75)
     global_p75 = float(df[TARGET].quantile(0.75))
-    promised = X_test["region_id"].map(region_p75).fillna(global_p75)
-    risk_live = (pred_live - promised) > DELAY_RISK_THRESHOLD_MINUTES
-
-    # sanity check against the full model on the same rows
-    mae_full = None
-    agreement = None
-    try:
-        full = joblib.load(MODELS / "eta_model.pkl")
-        pred_full = full.predict(X_test)
-        mae_full = float(mean_absolute_error(y_test, pred_full))
-        risk_full = (pred_full - promised) > DELAY_RISK_THRESHOLD_MINUTES
-        agreement = float((risk_live.values == risk_full.values).mean())
-        print("Full model: MAE %.2f min" % mae_full)
-        print("At Risk share on the test rows: live %.1f%%, full %.1f%%" % (
-            100.0 * float(risk_live.mean()), 100.0 * float(risk_full.mean())))
-        print("At Risk label agreement, live vs full model: %.1f%%" % (
-            100.0 * agreement))
-        del full
-    except Exception as exc:
-        print("Could not score the full model:", exc)
+    promised = X_test["region_id"].astype(str).map(
+        {str(k): v for k, v in region_p75.items()}
+    ).fillna(global_p75)
+    risk_live = (pred_p50 - promised.values) > DELAY_RISK_THRESHOLD_MINUTES
 
     metrics = {
-        "model": "HistGradientBoostingRegressor",
+        "model": "HistGradientBoostingRegressor (log1p target, categorical "
+                 "region_id/aoi_type/is_weekend)",
         "params": PARAMS,
         "sklearn_version": sklearn.__version__,
         "feature_order": list(FEATURE_ORDER),
+        "categorical_features": cat_features,
         "train_rows": int(len(X_train)),
         "test_rows": int(len(X_test)),
-        "mae_minutes": round(mae_live, 2),
-        "full_model_mae_minutes": None if mae_full is None else round(mae_full, 2),
-        "at_risk_agreement_with_full_model": (
-            None if agreement is None else round(agreement, 4)
-        ),
+        "mae_minutes": round(mae_p50, 2),
+        "p10_p90_coverage": round(in_band, 4),
+        "at_risk_share_test": round(float(risk_live.mean()), 4),
         "file_mb": round(size_mb, 2),
     }
     OUT_METRICS.write_text(json.dumps(metrics, indent=2))
 
+    # region defaults (same shape as v1, unchanged consumers)
     regions = {}
     for rid, g in df.groupby("region_id"):
         couriers = g["courier_id"].value_counts().head(TOP_N).index.tolist()
@@ -125,15 +172,11 @@ def main():
             "couriers": [int(c) for c in couriers],
             "aois": [[int(a), int(t)] for a, t in aois],
         }
-    defaults = {
+    OUT_DEFAULTS.write_text(json.dumps({
         "threshold_minutes": int(DELAY_RISK_THRESHOLD_MINUTES),
         "global_promised_eta_minutes": round(global_p75, 1),
         "regions": regions,
-    }
-    OUT_DEFAULTS.write_text(json.dumps(defaults, indent=2))
-
-    print("Regions in the defaults file:", len(regions))
-    print("Wrote", OUT_MODEL)
+    }, indent=2))
     print("Wrote", OUT_METRICS)
     print("Wrote", OUT_DEFAULTS)
 

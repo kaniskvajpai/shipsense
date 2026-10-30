@@ -1,9 +1,10 @@
 {
-  "model": "HistGradientBoostingRegressor",
+  "model": "HistGradientBoostingRegressor (log1p target, categorical region_id/aoi_type/is_weekend)",
   "params": {
     "max_iter": 300,
-    "learning_rate": 0.1,
-    "max_leaf_nodes": 63
+    "learning_rate": 0.05,
+    "max_leaf_nodes": 31,
+    "min_samples_leaf": 50
   },
   "sklearn_version": "1.5.2",
   "feature_order": [
@@ -16,10 +17,15 @@
     "aoi_type",
     "is_weekend"
   ],
+  "categorical_features": [
+    "region_id",
+    "aoi_type",
+    "is_weekend"
+  ],
   "train_rows": 158019,
   "test_rows": 39505,
-  "mae_minutes": 71.99,
-  "full_model_mae_minutes": null,
-  "at_risk_agreement_with_full_model": null,
-  "file_mb": 0.97
+  "mae_minutes": 81.39,
+  "p10_p90_coverage": 0.7973,
+  "at_risk_share_test": 0.0527,
+  "file_mb": 1.44
 }
